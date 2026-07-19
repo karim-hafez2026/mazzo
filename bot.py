@@ -102,21 +102,19 @@ async def download_via_ytdlp(url: str) -> dict:
     """التحميل الاحتياطي باستخدام yt-dlp"""
     cookie_file = os.path.join(os.path.dirname(__file__), '97939a42-954e-4ab2-9da4-2ab6e2b08473.txt')
     opts = {
-        'outtmpl': os.path.join(DOWNLOAD_DIR, '%(title)s.%(ext)s'),
-        'format': 'best[filesize<50M]/best[filesize<100M]/best',
+        'outtmpl': os.path.join(DOWNLOAD_DIR, '%(id)s.%(ext)s'),
+        'format': 'best[ext=mp4][filesize<50M]/best[filesize<50M]/best',
         'max_filesize': MAX_SIZE_MB * 1024 * 1024,
         'quiet': True,
         'no_warnings': True,
-        'extract_flat': False,
-        'cookiefile': cookie_file if os.path.exists(cookie_file) else None,
+        'extractor_args': {'youtube': {'player_client': ['ios']}},
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
+            'User-Agent': (
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                'AppleWebKit/537.36 (KHTML, like Gecko) '
+                'Chrome/125.0.0.0 Safari/537.36'
+            ),
         },
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['ios', 'android', 'web']
-            }
-        }
     }
     
     with yt_dlp.YoutubeDL(opts) as ydl:
