@@ -48,19 +48,28 @@ async def download_via_cobalt(url: str) -> dict:
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
     }
     data = {"url": url}
+    instances = ["https://api.cobalt.tools/", "https://co.wuk.sh/"]
     
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post("https://api.cobalt.tools/api/json", json=data, headers=headers, timeout=30) as resp:
-                if resp.status != 200:
-                    return {'error': f'❌ سيرفر Cobalt مشغول (الرمز {resp.status})'}
-                result = await resp.json()
+            result = None
+            for instance in instances:
+                try:
+                    async with session.post(instance, json=data, headers=headers, timeout=15) as resp:
+                        if resp.status == 200:
+                            result = await resp.json()
+                            break
+                except Exception:
+                    continue
+            
+            if not result:
+                return {'error': '❌ جميع سيرفرات Cobalt لا تستجيب'}
                 
-                if result.get('status') == 'error':
-                    return {'error': f"❌ فشل السحب: {result.get('text', 'خطأ غير معروف')}"}
+            if result.get('status') == 'error':
+                return {'error': f"❌ فشل السحب: {result.get('text', 'خطأ غير معروف')}"}
                 
                 download_url = result.get('url')
                 if not download_url:
@@ -91,6 +100,7 @@ async def download_via_cobalt(url: str) -> dict:
 
 async def download_via_ytdlp(url: str) -> dict:
     """التحميل الاحتياطي باستخدام yt-dlp"""
+    cookie_file = os.path.join(os.path.dirname(__file__), '97939a42-954e-4ab2-9da4-2ab6e2b08473.txt')
     opts = {
         'outtmpl': os.path.join(DOWNLOAD_DIR, '%(title)s.%(ext)s'),
         'format': 'best[filesize<50M]/best[filesize<100M]/best',
@@ -98,8 +108,15 @@ async def download_via_ytdlp(url: str) -> dict:
         'quiet': True,
         'no_warnings': True,
         'extract_flat': False,
-        # تيك توك بدون علامة مائية
-        'cookiefile': None,
+        'cookiefile': cookie_file if os.path.exists(cookie_file) else None,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
+        },
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['ios', 'android', 'web']
+            }
+        }
     }
     
     with yt_dlp.YoutubeDL(opts) as ydl:
