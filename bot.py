@@ -7,6 +7,8 @@ import re
 import asyncio
 import shutil
 import threading
+import uuid
+import aiohttp
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from tempfile import mkdtemp
 from datetime import datetime
@@ -41,8 +43,54 @@ async def progress_callback(current, total, event, msg):
                 pass
 
 
-async def download_video(url: str) -> dict:
-    """تحميل الفيديو باستخدام yt-dlp"""
+async def download_via_cobalt(url: str) -> dict:
+    """تحميل الفيديو باستخدام Cobalt API كحل أساسي"""
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    }
+    data = {"url": url}
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post("https://api.cobalt.tools/api/json", json=data, headers=headers, timeout=30) as resp:
+                if resp.status != 200:
+                    return {'error': f'❌ سيرفر Cobalt مشغول (الرمز {resp.status})'}
+                result = await resp.json()
+                
+                if result.get('status') == 'error':
+                    return {'error': f"❌ فشل السحب: {result.get('text', 'خطأ غير معروف')}"}
+                
+                download_url = result.get('url')
+                if not download_url:
+                    return {'error': '❌ لم يتم العثور على رابط مباشر'}
+                
+                filename = f"video_{uuid.uuid4().hex[:8]}.mp4"
+                filepath = os.path.join(DOWNLOAD_DIR, filename)
+                
+                async with session.get(download_url) as file_resp:
+                    if file_resp.status != 200:
+                        return {'error': '❌ فشل تحميل الملف المباشر'}
+                    
+                    with open(filepath, 'wb') as f:
+                        async for chunk in file_resp.content.iter_chunked(1024 * 1024):
+                            f.write(chunk)
+                
+                filesize = os.path.getsize(filepath)
+                return {
+                    'path': filepath,
+                    'title': 'Cobalt_Video',
+                    'filesize': filesize,
+                    'ext': 'mp4',
+                    'duration': 0,
+                }
+    except Exception as e:
+        return {'error': f'❌ خطأ في Cobalt: {str(e)[:100]}'}
+
+
+async def download_via_ytdlp(url: str) -> dict:
+    """التحميل الاحتياطي باستخدام yt-dlp"""
     opts = {
         'outtmpl': os.path.join(DOWNLOAD_DIR, '%(title)s.%(ext)s'),
         'format': 'best[filesize<50M]/best[filesize<100M]/best',
@@ -82,6 +130,16 @@ async def download_video(url: str) -> dict:
             return {'error': f'❌ خطأ: {str(e)[:100]}'}
 
 
+async def download_video(url: str) -> dict:
+    """المدير الأساسي للتحميل: يجرب Cobalt أولاً ثم yt-dlp"""
+    cobalt_res = await download_via_cobalt(url)
+    if 'error' not in cobalt_res:
+        return cobalt_res
+    
+    print(f"Cobalt failed: {cobalt_res.get('error')}. Falling back to yt-dlp...")
+    return await download_via_ytdlp(url)
+
+
 @bot.on(events.NewMessage(pattern=URL_PATTERN))
 async def handle_link(event):
     """استقبال الرابط والتحميل"""
@@ -118,7 +176,7 @@ async def handle_link(event):
         
         await event.reply(
             file=filepath,
-            caption=caption,
+            message=caption,
             parse_mode='html'
         )
         await msg.delete()
