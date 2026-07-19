@@ -45,104 +45,144 @@ async def progress_callback(current, total, event, msg):
 
 async def download_via_cobalt(url: str) -> dict:
     """تحميل الفيديو باستخدام Cobalt API كحل أساسي"""
+    # API v1 (new format as of 2024)
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
     }
-    data = {"url": url}
-    instances = ["https://api.cobalt.tools/", "https://co.wuk.sh/"]
+    data = {"url": url, "videoQuality": "1080", "filenameStyle": "basic"}
     
-    try:
-        async with aiohttp.ClientSession() as session:
-            result = None
-            for instance in instances:
-                try:
-                    async with session.post(instance, json=data, headers=headers, timeout=15) as resp:
-                        if resp.status == 200:
-                            result = await resp.json()
-                            break
-                except Exception:
-                    continue
-            
-            if not result:
-                return {'error': '❌ جميع سيرفرات Cobalt لا تستجيب'}
-                
-            if result.get('status') == 'error':
-                return {'error': f"❌ فشل السحب: {result.get('text', 'خطأ غير معروف')}"}
-                
-                download_url = result.get('url')
-                if not download_url:
-                    return {'error': '❌ لم يتم العثور على رابط مباشر'}
-                
-                filename = f"video_{uuid.uuid4().hex[:8]}.mp4"
-                filepath = os.path.join(DOWNLOAD_DIR, filename)
-                
-                async with session.get(download_url) as file_resp:
-                    if file_resp.status != 200:
-                        return {'error': '❌ فشل تحميل الملف المباشر'}
+    cobalt_instances = [
+        "https://api.cobalt.tools/",
+        "https://cobalt.api.timelessnesses.me/",
+        "https://co.wuk.sh/",
+    ]
+    
+    for instance in cobalt_instances:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    instance, json=data, headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as resp:
+                    if resp.status != 200:
+                        continue
+                    result = await resp.json()
                     
-                    with open(filepath, 'wb') as f:
-                        async for chunk in file_resp.content.iter_chunked(1024 * 1024):
-                            f.write(chunk)
-                
-                filesize = os.path.getsize(filepath)
-                return {
-                    'path': filepath,
-                    'title': 'Cobalt_Video',
-                    'filesize': filesize,
-                    'ext': 'mp4',
-                    'duration': 0,
-                }
-    except Exception as e:
-        return {'error': f'❌ خطأ في Cobalt: {str(e)[:100]}'}
+                    status = result.get('status', '')
+                    if status == 'error':
+                        continue
+                    
+                    # status can be 'stream', 'redirect', or 'tunnel'
+                    download_url = result.get('url')
+                    if not download_url:
+                        continue
+                    
+                    filename = f"video_{uuid.uuid4().hex[:8]}.mp4"
+                    filepath = os.path.join(DOWNLOAD_DIR, filename)
+                    
+                    async with session.get(
+                        download_url,
+                        timeout=aiohttp.ClientTimeout(total=120)
+                    ) as file_resp:
+                        if file_resp.status != 200:
+                            continue
+                        
+                        with open(filepath, 'wb') as f:
+                            async for chunk in file_resp.content.iter_chunked(1024 * 1024):
+                                f.write(chunk)
+                    
+                    if not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
+                        continue
+                    
+                    filesize = os.path.getsize(filepath)
+                    return {
+                        'path': filepath,
+                        'title': result.get('filename', 'video'),
+                        'filesize': filesize,
+                        'ext': 'mp4',
+                        'duration': 0,
+                    }
+        except Exception:
+            continue
+    
+    return {'error': '❌ Cobalt فشل على كل الـ instances'}
 
 
 async def download_via_ytdlp(url: str) -> dict:
     """التحميل الاحتياطي باستخدام yt-dlp"""
-    cookie_file = os.path.join(os.path.dirname(__file__), '97939a42-954e-4ab2-9da4-2ab6e2b08473.txt')
-    opts = {
+    cookie_file = os.path.join(os.path.dirname(__file__), 'cookies.txt')
+
+    base_opts = {
         'outtmpl': os.path.join(DOWNLOAD_DIR, '%(id)s.%(ext)s'),
-        'format': 'best[ext=mp4][filesize<50M]/best[filesize<50M]/best',
         'max_filesize': MAX_SIZE_MB * 1024 * 1024,
         'quiet': True,
         'no_warnings': True,
-        'extractor_args': {'youtube': {'player_client': ['ios']}},
+        'cookiefile': cookie_file if os.path.exists(cookie_file) else None,
+        # Bypass 403 / bot-detection
         'http_headers': {
             'User-Agent': (
                 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
                 'AppleWebKit/537.36 (KHTML, like Gecko) '
                 'Chrome/125.0.0.0 Safari/537.36'
             ),
+            'Accept-Language': 'en-US,en;q=0.9',
         },
     }
-    
-    with yt_dlp.YoutubeDL(opts) as ydl:
+
+    # Try multiple strategies in order
+    strategies = [
+        # 1. iOS client — works for most YouTube videos
+        {**base_opts,
+         'format': 'best[ext=mp4][filesize<50M]/best[filesize<50M]/best',
+         'extractor_args': {'youtube': {'player_client': ['ios']}}},
+        # 2. Android client
+        {**base_opts,
+         'format': 'best[ext=mp4][filesize<50M]/best[filesize<50M]/best',
+         'extractor_args': {'youtube': {'player_client': ['android']}}},
+        # 3. Web client (default) — last resort
+        {**base_opts,
+         'format': 'best[filesize<50M]/best'},
+    ]
+
+    last_error = '❌ فشل التحميل'
+    for opts in strategies:
         try:
-            info = ydl.extract_info(url, download=True)
-            filepath = ydl.prepare_filename(info)
-            # yt-dlp أحياناً يضيف امتداد مختلف
-            if not os.path.exists(filepath):
-                # البحث عن الملف
-                for f in os.listdir(DOWNLOAD_DIR):
-                    if info['id'] in f or info['title'][:20] in f:
-                        filepath = os.path.join(DOWNLOAD_DIR, f)
-                        break
-            
-            return {
-                'path': filepath,
-                'title': info.get('title', 'Video'),
-                'duration': info.get('duration', 0),
-                'filesize': os.path.getsize(filepath) if os.path.exists(filepath) else 0,
-                'ext': info.get('ext', 'mp4'),
-                'webpage_url': info.get('webpage_url', url),
-            }
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                if info is None:
+                    continue
+
+                filepath = ydl.prepare_filename(info)
+                # yt-dlp أحياناً يغير الامتداد بعد merge
+                if not os.path.exists(filepath):
+                    for f in os.listdir(DOWNLOAD_DIR):
+                        if info.get('id', '') in f:
+                            filepath = os.path.join(DOWNLOAD_DIR, f)
+                            break
+
+                if not os.path.exists(filepath):
+                    continue
+
+                return {
+                    'path': filepath,
+                    'title': info.get('title', 'Video'),
+                    'duration': info.get('duration', 0),
+                    'filesize': os.path.getsize(filepath),
+                    'ext': info.get('ext', 'mp4'),
+                    'webpage_url': info.get('webpage_url', url),
+                }
         except yt_dlp.utils.DownloadError as e:
-            if 'filesize' in str(e).lower():
+            err = str(e)
+            if 'filesize' in err.lower():
                 return {'error': f'⚠️ الفيديو أكبر من {MAX_SIZE_MB}MB'}
-            return {'error': f'❌ فشل التحميل: {str(e)[:100]}'}
+            last_error = f'❌ فشل التحميل: {err[:120]}'
+            continue
         except Exception as e:
-            return {'error': f'❌ خطأ: {str(e)[:100]}'}
+            last_error = f'❌ خطأ: {str(e)[:120]}'
+            continue
+
+    return {'error': last_error}
 
 
 async def download_video(url: str) -> dict:
@@ -240,6 +280,10 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"Bot is alive!")
 
+    def log_message(self, format, *args):
+        pass  # silence HTTP logs
+
+
 def run_health_server():
     port = int(os.environ.get("PORT", 8000))
     server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
@@ -252,7 +296,6 @@ async def main():
     
     await bot.start(bot_token=BOT_TOKEN)
     
-    # ضبط الأوامر
     print('✅ Video Download Bot شغال!')
     
     await bot.run_until_disconnected()
