@@ -180,7 +180,7 @@ async def main():
     await bot.start(bot_token=BOT_TOKEN)
     
     # ضبط الأوامر
-    await bot.send_message('me', '✅ Video Download Bot شغال!')
+    print('✅ Video Download Bot شغال!')
     
     await bot.run_until_disconnected()
 
