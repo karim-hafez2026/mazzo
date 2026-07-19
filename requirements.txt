@@ -1,0 +1,3 @@
+# Video Download Bot - خفيف جداً
+telethon>=1.34
+yt-dlp>=2024.0
